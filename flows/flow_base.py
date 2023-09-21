@@ -27,10 +27,13 @@ class NormalizingFlow(tf.keras.models.Model):
         return loss
     
 class JetFlow(tf.keras.models.Model):
-
-    def __init__(self,base_distribution,target_distribution,flow_layers:Sequence,**kwargs) -> None:
+    '''
+    Flow: transforms reco jet into original jet
+    Base distribution: kinematics of reco jet
+    target distribution: kinematics of orig. jet
+    '''
+    def __init__(self,base_distribution,flow_layers:Sequence,**kwargs) -> None:
         self.base_distribution=base_distribution
-        self.target_distribution=target_distribution
         self.flow_layers=flow_layers
         bijector=tfb.Chain(list(reversed(self.flow_layers)))
         self.flow=tfd.TransformedDistribution(distribution=self.base_distribution,bijector=bijector)
@@ -41,10 +44,17 @@ class JetFlow(tf.keras.models.Model):
 
     @tf.function
     def forward_step(self, X_batch,Y_batch,optimizer,loss_fn,training=True):
+        '''
+        For training,
+        X_batch: reco jets
+        Y_batch: orig jets
+        orig_flow: "original" jet as reconstructed by the flow
+        loss function - threeD loss (as used by VAE) computed between orig_flow and Y_batch (actual original jets)
+        '''
         with tf.GradientTape() as tape:
             tape.watch(self.flow.trainable_variables)
-            orig_flow=self.flow.sample(X_batch) # Shape: batch size x 300
-            loss=loss_fn(tf.reshape(orig_flow,[-1,100,3]),tf.reshape(Y_batch,[-1,100,3])) # Reshape to batch size x 100 x 3 to be compatible with loss
+            orig_flow=self.flow.sample(X_batch) # Shape: batch size x 100 x 3
+            loss=loss_fn(Y_batch,orig_flow) # Shape: batch size x 100 x 3 to be compatible with threeD loss
             if training:
                 gradients = tape.gradient(loss, self.flow.trainable_variables)
                 optimizer.apply_gradients(zip(gradients, self.flow.trainable_variables))
