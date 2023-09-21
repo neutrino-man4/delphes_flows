@@ -34,6 +34,7 @@ class JetMAF(fb.JetFlow):
             bijectors.append(tfb.MaskedAutoregressiveFlow(shift_and_log_scale_fn=made_layer))
             bijectors.append(tfb.Permute(permutation=range(np.prod(event_dim))))
         bijectors.append(tfb.Reshape(self.flattened_dim,self.event_dim)) # Reshape from 100x3 to 300
+        # Order of the reshape bijectors appears to be reversed here because the list of bijectors is reversed in the base class when chaining together
         super(MAF,self).__init__(base_distribution=base_distribution,target_distribution=target_distribution,flow_layers=bijectors,**kwargs)
         # Calling the base class will initialize the normalizing flow which can be accessed as self.flow
         # __call__ is implemented in the base class as well
