@@ -38,7 +38,7 @@ train_ds = tf.data.Dataset.from_generator(data_train_generator, output_signature
 #validation (full tensor, 1M events -> 2M samples)                                                                          
 print('>>> Preparing validation dataset')
 const_orig_valid, const_reco_valid = dha.CMSDataHandler(path=paths.sample_dir_path(valid_sample)).read_events_from_dir(read_n=params.valid_total_n)
-data_valid = dha.events_to_input_samples(const_orig_valid) # We need to use only the "original" jets as validation
+data_orig_valid,data_reco_valid = dha.events_to_orig_reco_samples(const_orig_valid,const_reco_valid) # We need to use only the "original" jets as validation
 import pdb;pdb.set_trace()
 
-valid_ds = tf.data.Dataset.from_tensor_slices(data_valid).batch(params.batch_n, drop_remainder=True)
+valid_ds = tf.data.Dataset.from_tensor_slices((data_orig_valid,data_reco_valid)).batch(params.batch_n, drop_remainder=True)
