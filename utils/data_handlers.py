@@ -8,7 +8,14 @@ def events_to_input_samples(constituents):
     const_j1 = constituents[:,0,:,:]
     const_j2 = constituents[:,1,:,:]
     return np.vstack([const_j1, const_j2])
-    
+
+def events_to_orig_reco_samples(constituents_orig,constituents_reco):
+    orig_const_j1 = constituents_orig[:,0,:,:]
+    orig_const_j2 = constituents_orig[:,1,:,:]
+    reco_const_j1 = constituents_reco[:,0,:,:]
+    reco_const_j2 = constituents_reco[:,1,:,:]
+    return np.vstack([orig_const_j1, orig_const_j2]),np.vstack([reco_const_j1, reco_const_j2])
+
 ''' 
 We can inherit from the original Case Data Reader and modify only the part where pt,eta,phi is converted to px,py,pz
 For the normalizing flow, we don't need to convert 
@@ -31,8 +38,7 @@ class CMSDataGenerator(CaseDataGenerator):
         # loop through whole dataset, reading sample_part_n events at a time
         for constituents_orig, constituents_reco in generator:
             
-            orig_samples = events_to_input_samples(constituents_orig[:,:,:,:3])
-            reco_samples = events_to_input_samples(constituents_reco[:,:,:,:3])
+            orig_samples,reco_samples = events_to_orig_reco_samples(constituents_orig[:,:,:,:3],constituents_reco[:,:,:,:3])
             
             indices = list(range(len(reco_samples)))
             samples_read_n += len(reco_samples)
