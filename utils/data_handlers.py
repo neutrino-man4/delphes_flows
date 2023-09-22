@@ -46,37 +46,35 @@ class CMSDataHandler(CaseDataReader):
         self.jet_reco_constituents_key='jetConstituentsList'    
         
 
-    def read_events_from_file(self, fname=None, **cuts): # -> np.ndarray, np.ndarray
+    def read_events_from_file(self, fname=None): # -> np.ndarray, np.ndarray
         fname = fname or self.path
-        constituents_orig, features = self.read_constituents_and_dijet_features_from_file(fname) # -> np.ndarray, np.ndarray
+        constituents_orig, constituents_reco = self.read_orig_and_reco_constituents_from_file(fname) # -> np.ndarray, np.ndarray
         try:
-            constituents, features = self.read_constituents_and_dijet_features_from_file(fname) # -> np.ndarray, np.ndarray
-            if cuts:
-                constituents, features = self.make_cuts(constituents, features, **cuts) # -> np.ndarray, np.ndarray
+            constituents_orig, constituents_reco = self.read_orig_and_reco_constituents_from_file(fname) # -> np.ndarray, np.ndarray
         except OSError as e:
             print("\n[ERROR] Could not read file ", fname, ': ', repr(e))
         except IndexError as e:
             print("\n[ERROR] No data in file ", fname, ':', repr(e))
         except Exception as e:
             print("\nCould not read file ", fname, ': ', repr(e))
-        return np.asarray(constituents), np.asarray(features)
+        return np.asarray(constituents_orig), np.asarray(constituents_reco)
 
 
-    def extend_by_file_content(self, constituents, features, fname, **cuts):
-        cc, ff = self.read_events_from_file(fname, **cuts)
-        constituents.extend(cc)
-        features.extend(ff)
-        return constituents, features
+    def extend_by_file_content(self, constituents_orig, constituents_reco, fname):
+        cco, ccr = self.read_events_from_file(fname)
+        constituents_orig.extend(cco)
+        constituents_reco.extend(ccr)
+        return constituents_orig, constituents_reco
 
     def generate_event_parts_by_num(self, parts_n, flist, **cuts):
         # keeping data in lists for performance
-        constituents_concat = []
-        features_concat = []
+        constituents_orig_concat = []
+        constituents_reco_concat = []
 
         for i_file, fname in enumerate(flist):
-            constituents_concat, features_concat = self.extend_by_file_content(constituents_concat, features_concat, fname, **cuts)
+            constituents_orig_concat, constituents_reco_concat = self.extend_by_file_content(constituents_orig_concat, constituents_reco_concat, fname)
 
-            while (len(features_concat) >= parts_n): # if event sample size exceeding max size or min n, yield next chunk and reset
+            while (len(constituents_reco_concat) >= parts_n): # if event sample size exceeding max size or min n, yield next chunk and reset
                 constituents_part, constituents_concat = constituents_concat[:parts_n], constituents_concat[parts_n:] # makes copy of *references* to ndarrays 
                 features_part, features_concat = features_concat[:parts_n], features_concat[parts_n:]
                 yield (np.asarray(constituents_part), np.asarray(features_part)) # makes copy of all data, s.t. yielded chunk is new(!) array (since *_part is a list) => TODO: CHECK!
