@@ -1,47 +1,54 @@
 import numpy as np
 from sarewt.data_reader import CaseDataReader
-from vande.util.data_generator import CaseDataGenerator,mask_training_cuts,constituents_to_input_samples,events_to_input_samples
-
+from vande.util.data_generator import CaseDataGenerator
+import pandas as pd
 import h5py
-class PathManager():
-    def __init__():
-        pass
 
+def events_to_input_samples(constituents):
+    const_j1 = constituents[:,0,:,:]
+    const_j2 = constituents[:,1,:,:]
+    return np.vstack([const_j1, const_j2])
+    
 ''' 
 We can inherit from the original Case Data Reader and modify only the part where pt,eta,phi is converted to px,py,pz
 For the normalizing flow, we don't need to convert 
 
 '''
 class CMSDataGenerator(CaseDataGenerator):
-    def __init__(self, path, sample_part_n=1e4, sample_max_n=None, **cuts):
-        super(CMSDataGenerator).__init__(self, path, sample_part_n=1e4, sample_max_n=None, **cuts)
-    def __call__(self): # -> generator object yielding np.ndarray, np.ndarray
+    def __init__(self, path, sample_part_n=1e4, sample_max_n=None):
+        super().__init__(path, sample_part_n, sample_max_n)
+        self.path=path
+        print("Successfully initialized")
+    def __call__(self,orig_or_reco='orig'): # -> generator object yielding np.ndarray, np.ndarray
         '''
             generate single(!) data-sample (batching done in tf.Dataset)
         '''
         
         # create new file data-reader, each time data-generator is called (otherwise file-data-reader generation not reset)
-        generator = CMSDataHandler(self.path).generate_event_parts_from_dir(parts_n=self.sample_part_n, **self.cuts)
-
+        generator = CMSDataHandler(self.path).generate_event_parts_from_dir(parts_n=self.sample_part_n)
+        
         samples_read_n = 0
         # loop through whole dataset, reading sample_part_n events at a time
-        for constituents, features in generator:
-            samples = events_to_input_samples(constituents[:,:,:,:3], features)
-            indices = list(range(len(samples)))
-            samples_read_n += len(samples)
+        for constituents_orig, constituents_reco in generator:
+            
+            orig_samples = events_to_input_samples(constituents_orig[:,:,:,:3])
+            reco_samples = events_to_input_samples(constituents_reco[:,:,:,:3])
+            
+            indices = list(range(len(reco_samples)))
+            samples_read_n += len(reco_samples)
             while indices:
                 index = indices.pop(0)
-                next_sample = samples[index] #.copy() 
-                yield next_sample
+                next_reco_sample = reco_samples[index] #.copy() 
+                next_orig_sample = orig_samples[index] #.copy() 
+                yield next_orig_sample,next_reco_sample
             if self.sample_max_n is not None and (samples_read_n >= self.sample_max_n):
                 break
-        
         print('[DataGenerator]: __call__() yielded {} samples'.format(samples_read_n))
         generator.close()
 
 class CMSDataHandler(CaseDataReader):
     def __init__(self,path):
-        super(CMSDataHandler).__init__(self,path)
+        super().__init__(path)
         self.jet_orig_constituents_key='jetOrigConstituentsList'
         self.jet_reco_constituents_key='jetConstituentsList'    
         
@@ -58,7 +65,37 @@ class CMSDataHandler(CaseDataReader):
         except Exception as e:
             print("\nCould not read file ", fname, ': ', repr(e))
         return np.asarray(constituents_orig), np.asarray(constituents_reco)
+    
+    def read_events_from_dir(self, read_n=None, features_to_df=False, reco_or_orig='both', **cuts): # -> np.ndarray, list, np.ndarray, list
+        '''
+        read dijet events (jet constituents & jet features) from files in directory
+        :param read_n: limit number of events
+        :return: concatenated jet constituents and jet feature array + corresponding particle feature names and event feature names
+        '''
+        print('[DataReader] read_events_from_dir(): reading {} events from {}'.format((read_n or 'all'), self.path))
 
+        constituents_orig_concat = []
+        constituents_reco_concat = []
+
+        flist = self.get_file_list()
+        n = 0
+        
+        for i_file, fname in enumerate(flist):
+            constituents_orig, constituents_reco = self.read_events_from_file(fname)
+            constituents_orig_concat.append(constituents_orig)
+            constituents_reco_concat.append(constituents_reco)
+            n += len(constituents_orig)
+            if read_n is not None and (n >= read_n):
+                break
+        
+        constituents_orig_concat, constituents_reco_concat = np.concatenate(constituents_orig_concat, axis=0)[:read_n], np.concatenate(constituents_reco_concat, axis=0)[:read_n]
+        print('\nnum files read in dir ', self.path, ': ', i_file + 1)
+        if reco_or_orig=='reco':
+            return np.asarray(constituents_reco_concat)
+        elif reco_or_orig=='orig':
+            return np.asarray(constituents_orig_concat)
+        else:
+            return [np.asarray(constituents_orig_concat), np.asarray(constituents_reco_concat)]
 
     def extend_by_file_content(self, constituents_orig, constituents_reco, fname):
         cco, ccr = self.read_events_from_file(fname)
@@ -66,7 +103,7 @@ class CMSDataHandler(CaseDataReader):
         constituents_reco.extend(ccr)
         return constituents_orig, constituents_reco
 
-    def generate_event_parts_by_num(self, parts_n, flist, **cuts):
+    def generate_event_parts_by_num(self, parts_n, flist):
         # keeping data in lists for performance
         constituents_orig_concat = []
         constituents_reco_concat = []
@@ -75,31 +112,29 @@ class CMSDataHandler(CaseDataReader):
             constituents_orig_concat, constituents_reco_concat = self.extend_by_file_content(constituents_orig_concat, constituents_reco_concat, fname)
 
             while (len(constituents_reco_concat) >= parts_n): # if event sample size exceeding max size or min n, yield next chunk and reset
-                constituents_part, constituents_concat = constituents_concat[:parts_n], constituents_concat[parts_n:] # makes copy of *references* to ndarrays 
-                features_part, features_concat = features_concat[:parts_n], features_concat[parts_n:]
-                yield (np.asarray(constituents_part), np.asarray(features_part)) # makes copy of all data, s.t. yielded chunk is new(!) array (since *_part is a list) => TODO: CHECK!
+                constituents_orig_part, constituents_orig_concat = constituents_orig_concat[:parts_n], constituents_orig_concat[parts_n:] # makes copy of *references* to ndarrays 
+                constituents_reco_part, constituents_reco_concat = constituents_reco_concat[:parts_n], constituents_reco_concat[parts_n:] # makes copy of *references* to ndarrays 
+                yield (np.asarray(constituents_orig_part), np.asarray(constituents_reco_part)) # makes copy of all data, s.t. yielded chunk is new(!) array (since *_part is a list) => TODO: CHECK!
         
         # if data left, yield it
-        if features_concat:
-            yield (np.asarray(constituents_concat), np.asarray(features_concat))
+        if constituents_reco_concat:
+            yield (np.asarray(constituents_orig_concat), np.asarray(constituents_reco_concat))
 
 
-    def generate_event_parts_from_dir(self, parts_n=None, parts_sz_mb=None, **cuts):
+    def generate_event_parts_from_dir(self, parts_n=None, parts_sz_mb=None):
         '''
         file parts generator
         yields events in parts_n (number of events) or parts_sz_mb (size of events) chunks
         '''
         
         # if no chunk size or chunk number given, return all events in all files of directory
-        if not (parts_sz_mb or parts_n):
-            return self.read_events_from_dir(**cuts)
-
+        
         flist = self.get_file_list()
 
         if parts_n is not None:
-            gen = self.generate_event_parts_by_num(int(parts_n), flist, **cuts)
+            gen = self.generate_event_parts_by_num(int(parts_n), flist)
         else: 
-            gen = self.generate_event_parts_by_size(parts_sz_mb, flist, **cuts)
+            gen = self.generate_event_parts_by_size(parts_sz_mb, flist)
 
         for chunk in gen: 
             yield chunk
@@ -134,15 +169,12 @@ class CMSDataHandler(CaseDataReader):
         # j1_reco_constituents = np.array(j1_reco_constituents_pt_eta_phi_sorted)
         # j2_reco_constituents = np.array(j2_reco_constituents_pt_eta_phi_sorted)
         
+        # Shape of returned array: Batch Size x 2 x 100 x 3
         return np.stack([j1_constituents_pt_eta_phi, j2_constituents_pt_eta_phi], axis=1),np.stack([j1_reco_constituents_pt_eta_phi, j2_reco_constituents_pt_eta_phi], axis=1) # Do not sort based on pt
 
     def read_orig_and_reco_constituents_from_file(self,path):
         with h5py.File(path,'r') as f:
-            #features = np.array(f.get(self.jet_features_key))
-            #print(self.jet_features_key)
-            #print(path)
             constituents_orig,constituents_reco = self.read_jet_constituents_from_file(f)
-            #print(features)
-            #print("WTF")
-            #import pdb;pdb.set_trace()
+            # Shape of returned arrays: Batch Size x 2 x 100 x 3
+        
             return [constituents_orig, constituents_reco]
