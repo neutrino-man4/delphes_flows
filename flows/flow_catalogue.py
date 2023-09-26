@@ -43,7 +43,7 @@ class JetMAF(fb.JetFlow):
         #bijectors.append(tfb.Reshape(self.event_dim,self.flattened_dim)) # Reshape from 300 to 100x3
         for i in range(self.n_bijectors):
             made_layer=tfb.AutoregressiveNetwork(params=2, event_shape=[300], hidden_units=[128,64,32],
-                                                 activation='relu', use_bias=True, kernel_initializer='he_uniform')
+                                                 activation='relu', use_bias=True, kernel_initializer='glorot_uniform')
             self.bijector_fns.append(tfb.MaskedAutoregressiveFlow(shift_and_log_scale_fn=made_layer))
             
             bijectors.append(self.bijector_fns[-1])
