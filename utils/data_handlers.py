@@ -5,23 +5,28 @@ import pandas as pd
 import h5py
 
 def events_to_input_samples(constituents):
+    '''Stacks up both jets in a constituents array of shape N x 2 x 100 x 3 and returns an array of shape 2N x 100 x 3'''
     const_j1 = constituents[:,0,:,:]
     const_j2 = constituents[:,1,:,:]
     return np.vstack([const_j1, const_j2])
 
 def events_to_orig_reco_samples(constituents_orig,constituents_reco):
+    '''
+        Stacks up both jets in a constituents array of shape N x 2 x 100 x 3 and returns an array of shape 2N x 100 x 3
+        Does this for two sets of jets: orig and reco
+    '''
+    
     orig_const_j1 = constituents_orig[:,0,:,:]
     orig_const_j2 = constituents_orig[:,1,:,:]
     reco_const_j1 = constituents_reco[:,0,:,:]
     reco_const_j2 = constituents_reco[:,1,:,:]
     return np.vstack([orig_const_j1, orig_const_j2]),np.vstack([reco_const_j1, reco_const_j2])
 
-''' 
-We can inherit from the original Case Data Reader and modify only the part where pt,eta,phi is converted to px,py,pz
-For the normalizing flow, we don't need to convert 
-
-'''
 class CMSDataGenerator(CaseDataGenerator):
+    ''' 
+    We can inherit from the original Case Data Reader and modify only the part where pt,eta,phi is converted to px,py,pz
+    For the normalizing flow, we don't need to convert 
+    '''
     def __init__(self, path, sample_part_n=1e4, sample_max_n=None):
         super().__init__(path, sample_part_n, sample_max_n)
         self.path=path
@@ -39,7 +44,7 @@ class CMSDataGenerator(CaseDataGenerator):
         for constituents_orig, constituents_reco in generator:
             
             orig_samples,reco_samples = events_to_orig_reco_samples(constituents_orig[:,:,:,:3],constituents_reco[:,:,:,:3])
-            
+            #import pdb;pdb.set_trace()
             indices = list(range(len(reco_samples)))
             samples_read_n += len(reco_samples)
             while indices:
@@ -72,7 +77,7 @@ class CMSDataHandler(CaseDataReader):
             print("\nCould not read file ", fname, ': ', repr(e))
         return np.asarray(constituents_orig), np.asarray(constituents_reco)
     
-    def read_events_from_dir(self, read_n=None, features_to_df=False, reco_or_orig='both', **cuts): # -> np.ndarray, list, np.ndarray, list
+    def read_events_from_dir(self, read_n=None, reco_or_orig='both', **cuts): # -> np.ndarray, list, np.ndarray, list
         '''
         read dijet events (jet constituents & jet features) from files in directory
         :param read_n: limit number of events
