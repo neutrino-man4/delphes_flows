@@ -21,7 +21,7 @@ class MADE(tfk.layers.Layer):
     :param bias_regularizer: Regularizer function applied to the Dense bias weight vectors. Default: None.
     """
 
-    def __init__(self, params, event_shape=None, hidden_units=[128,64,32], activation='relu', use_bias=True,
+    def __init__(self, params=2, event_shape=[300], hidden_units=[128,64,32], activation='relu', use_bias=True,kernel_initializer='he_uniform',
                  kernel_regularizer=None, bias_regularizer=None, name="made"):
 
         super(MADE, self).__init__(name=name)
@@ -35,8 +35,9 @@ class MADE(tfk.layers.Layer):
         self.bias_regularizer = bias_regularizer
 
         self.network = tfb.AutoregressiveNetwork(params=params, event_shape=event_shape, hidden_units=hidden_units,
-                                                 activation=activation, use_bias=use_bias, kernel_regularizer=kernel_regularizer, 
+                                                 activation=activation, use_bias=use_bias, kernel_regularizer=kernel_regularizer,kernel_initializer=kernel_initializer, 
                                                  bias_regularizer=bias_regularizer)
 
     def __call__(self):
         return self.network
+
