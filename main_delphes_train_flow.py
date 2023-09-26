@@ -16,7 +16,7 @@ train_sample='qcdSigMCOrigReco'
 valid_sample='qcdSigMCOrigValidReco'
 seed=50005
 
-Parameters = namedtuple('Parameters', 'run_n input_shape epochs train_total_n gen_part_n valid_total_n batch_n learning_rate max_lr_decay reg_factor')
+Parameters = namedtuple('Parameters', 'run_n input_shape epochs train_total_n gen_part_n valid_total_n batch_n learning_rate min_delta max_lr_decay reg_factor clip')
 params = Parameters(run_n=seed, 
                     input_shape=(100,3),
                     epochs=100,
@@ -24,9 +24,11 @@ params = Parameters(run_n=seed,
                     valid_total_n=int(5e3), 
                     gen_part_n=int(1e6),
                     batch_n=1024,
-                    learning_rate=0.01,
-                    max_lr_decay=8, 
+                    learning_rate=0.001,
+                    min_delta=0.03,
+                    max_lr_decay=4, 
                     reg_factor=0.001,
+                    clip=0.75
                     ) # 'L1L2'
 experiment = expe.Experiment(run_n=params.run_n).setup(flow_dir=True)
 paths = safa.SamplePathDirFactory(sdr.path_dict).update_base_path({'$run$': experiment.run_dir})
@@ -42,12 +44,12 @@ const_orig_valid, const_reco_valid = dha.CMSDataHandler(path=paths.sample_dir_pa
 data_orig_valid,data_reco_valid = dha.events_to_orig_reco_samples(const_orig_valid,const_reco_valid) # We need to use only the "original" jets as validation
 valid_ds = tf.data.Dataset.from_tensor_slices((data_orig_valid,data_reco_valid)).batch(params.batch_n, drop_remainder=True)
 
-optimizer1 = tf.keras.optimizers.Adam(learning_rate=params.learning_rate)
-optimizer2 = tf.keras.optimizers.Adam(learning_rate=params.learning_rate)
+optimizer1 = tf.keras.optimizers.Adam(learning_rate=params.learning_rate,clipvalue=params.clip)
+optimizer2 = tf.keras.optimizers.Adam(learning_rate=params.learning_rate,clipvalue=params.clip)
 
 jet_flow_orig=fc.JetMAF()
 jet_flow_reco=fc.JetMAF()
-jtra=tra.JointTrainer(optimizer1,optimizer2,patience=3, min_delta=0.03, max_lr_decay=params.max_lr_decay,datalength=params.train_total_n, batchsize=params.batch_n, lr_decay_factor=0.3)
+jtra=tra.JointTrainer(optimizer1,optimizer2,patience=3, min_delta=params.min_delta, max_lr_decay=params.max_lr_decay,datalength=params.train_total_n, batchsize=params.batch_n, lr_decay_factor=0.3)
 losses_train,losses_valid=jtra.train(jet_flow_orig,jet_flow_reco,train_ds,valid_ds,params.epochs,params.reg_factor)
 jet_flow_orig.save_model(experiment.flow_dir,'orig_flow.h5')
 jet_flow_reco.save_model(experiment.flow_dir,'reco_flow.h5')
