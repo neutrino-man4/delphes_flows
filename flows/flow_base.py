@@ -2,6 +2,7 @@ import tensorflow as tf
 import tensorflow_probability as tfp
 from typing import Sequence
 import os
+import pathlib
 
 tfd=tfp.distributions
 tfb=tfp.bijectors
@@ -27,7 +28,7 @@ class NormalizingFlow(tf.keras.models.Model):
                 optimizer.apply_gradients(zip(gradients, self.trainable_variables))
         return loss
     
-class JetFlow(tf.keras.models.Model):
+class JetFlow(tf.keras.Model):
     '''
     Flow: transforms reco jet into original jet
     Base distribution: kinematics of reco jet
@@ -37,8 +38,9 @@ class JetFlow(tf.keras.models.Model):
         super().__init__(**kwargs)
         self.flow=None
         
-    def __call__(self,*input):
-        return self.flow.bijector.forward(*input)
+        
+    def call(self,x):
+        return self.flow.bijector.forward(x)
 
     @tf.function
     def forward_step(self, X_batch,optimizer,training=True):
@@ -56,16 +58,21 @@ class JetFlow(tf.keras.models.Model):
         return loss
     
     def nll_loss(self,X_batch,training=False):
-        return tf.math.abs(-tf.reduce_mean(self.flow.log_prob(X_batch,training=training)))
+        log_prob=self.flow.log_prob(X_batch,training=training)
+        log_prob=tf.where(tf.math.is_finite(log_prob),log_prob,tf.zeros_like(log_prob))
+        log_prob=tfp.math.clip_by_value_preserve_gradient(log_prob,-1.0e6,1.0e6)
+        return (-tf.reduce_mean(log_prob))
     
     def invert(self,X_batch):
         return self.flow.bijector.inverse(X_batch)
     
-    def save_model(self,path,fname='jetMAF.tf'):
-        model_name=os.path.join(path,fname)
-        self.save(model_name,save_format='tf')
     
-    def load_model(self,path,custom_objects={},fname='jetMAF.tf'):
-        model_name=os.path.join(path,fname)
-        return tf.keras.saving.load_model(model_name,custom_objects=custom_objects)
-
+    def save_checkpoint(self,path,optimizer,fname='best_so_far.ckpt'):
+        pathlib.Path(path).mkdir(exist_ok=True,parents=True)
+        ckpt=tf.train.Checkpoint(model=self,optimizer=optimizer)
+        ckpt.save(os.path.join(path,fname))
+        
+    def load_from_checkpoint(self,path,optimizer,fname='best_so_far.ckpt'):
+        ckpt=tf.train.Checkpoint(model=self,optimizer=optimizer)
+        ckpt.restore(tf.train.latest_checkpoint(path))
+        print(f'Restored checkpoints from {path}')
