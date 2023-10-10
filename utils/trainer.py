@@ -3,20 +3,16 @@ import tensorflow_probability as tfp
 from vande.training import Stopper
 import numpy as np
 from vande.vae.losses import threeD_loss
-import get_free_gpu_id as gpu
+
 import os,sys
 
-if gpu.fetch_id()<0:
-    print("No GPU devices with sufficient memory. Try again when its free")
-    sys.exit(0)
-free_gpu=gpu.fetch_id()
-os.environ["CUDA_VISIBLE_DEVICES"]=str(free_gpu)
-
-
-print(f'Running on GPU ID: {free_gpu}')
 tfd=tfp.distributions
 tfb=tfp.bijectors
 tfk=tf.keras
+
+def remove_nans(X):
+    return tf.where(tf.math.is_finite(X),X,tf.zeros_like(X))
+
 class Stopper():
     def __init__(self, optimizer1,optimizer2, min_delta=0.01, patience=4, max_lr_decay=10, lr_decay_factor=0.3):
         self.optimizer1 = optimizer1
@@ -118,22 +114,51 @@ class JointTrainer():
         self.best_loss_so_far = None    
         self.train_stop = Stopper(optimizer_orig,optimizer_reco, min_delta, patience, max_lr_decay,lr_decay_factor)
     
+    def get_3D_loss_between_jets(self,model_orig,model_reco,orig_batch,reco_batch,strategy=0):
+        if strategy==1:
+            threedim_loss_A=threeD_loss(tf.reshape(reco_batch,[-1,100,3]),tf.reshape(self.reco_to_orig(model_orig,model_reco,reco_batch),[-1,100,3]))
+            threedim_loss_B=threeD_loss(tf.reshape(reco_batch,[-1,100,3]),tf.reshape(orig_batch,[-1,100,3]))
+            threedim_loss=remove_nans(tf.math.abs(threedim_loss_A - threedim_loss_B))
+            #threedim_loss=tf.where(tf.math.is_finite(threedim_loss),threedim_loss,tf.zeros_like(threedim_loss))
+            threedim_loss=tf.reduce_mean(threedim_loss)
+        else:
+            threedim_loss=threeD_loss(tf.reshape(orig_batch,[-1,100,3]),tf.reshape(self.reco_to_orig(model_orig,model_reco,reco_batch),[-1,100,3]))
+            threedim_loss=remove_nans(tf.math.abs(threedim_loss))
+            threedim_loss=tf.reduce_mean(threedim_loss)
+        return threedim_loss
+    
+    def get_loss_between_jets(self,model_orig,model_reco,orig_batch,reco_batch):
+        threedim_loss=tf.math.sqrt(tf.math.squared_difference(orig_batch,self.reco_to_orig(model_orig,model_reco,reco_batch)))
+        threedim_loss=remove_nans(threedim_loss)
+        threedim_loss=tfp.math.clip_by_value_preserve_gradient(threedim_loss,-1.0e3,1.0e3)
+        threedim_loss=tf.reduce_mean(threedim_loss)
+        return threedim_loss
+    
     @tf.function
     def training_step(self,model_orig,model_reco,orig_batch,reco_batch,reg_factor=0.01):
         
         with tf.GradientTape(persistent=True) as tape:
             tape.watch([model_orig.trainable_variables,model_reco.trainable_variables])
-            threedim_loss=threeD_loss(tf.reshape(orig_batch,[-1,100,3]),tf.reshape(self.reco_to_orig(model_orig,model_reco,reco_batch),[-1,100,3]))
-            threedim_loss=tf.abs(tf.reduce_mean(threedim_loss))
             orig_flow_loss=model_orig.nll_loss(orig_batch,training=True)
             reco_flow_loss=model_reco.nll_loss(reco_batch,training=True)
+        
+            latent_loss=tf.math.squared_difference(model_reco.invert(reco_batch),model_orig.invert(orig_batch))
+            threedim_loss=self.get_loss_between_jets(model_orig,model_reco,orig_batch,reco_batch)
+                
+            latent_loss=remove_nans(latent_loss)
+            latent_loss=tf.reduce_mean(latent_loss)
+            
+            loss_orig=threedim_loss+reg_factor*orig_flow_loss#+latent_loss
+            loss_reco=threedim_loss+reg_factor*reco_flow_loss#+latent_loss
 
-            latent_loss=tf.reduce_mean(tf.math.squared_difference(model_reco.invert(reco_batch),model_orig.invert(orig_batch)))
-            loss_orig=reg_factor*orig_flow_loss+latent_loss+threedim_loss
-            loss_reco=reg_factor*reco_flow_loss+latent_loss+threedim_loss
         orig_gradients=tape.gradient(loss_orig,model_orig.trainable_variables)
         reco_gradients=tape.gradient(loss_reco,model_reco.trainable_variables)
-            
+        orig_gradients=[remove_nans(grad) for grad in orig_gradients]
+        reco_gradients=[remove_nans(grad) for grad in reco_gradients]
+        orig_gradients = [(tf.clip_by_value(grad, -0.7, 0.7))
+                                  for grad in orig_gradients]    
+        reco_gradients = [(tf.clip_by_value(grad, -0.7, 0.7))
+                                  for grad in reco_gradients]    
         self.optimizer_orig.apply_gradients(zip(orig_gradients, model_orig.trainable_variables))
         self.optimizer_reco.apply_gradients(zip(reco_gradients, model_reco.trainable_variables))
         return loss_orig+loss_reco,reg_factor*(orig_flow_loss+reco_flow_loss),2*latent_loss,2*threedim_loss # Factor of 2 is needed because the latent loss is same for both networks
@@ -147,23 +172,34 @@ class JointTrainer():
             
             orig_batch=tf.reshape(orig,self.flat_dim)
             reco_batch=tf.reshape(reco,self.flat_dim)
-            loss,flow_loss,latent_loss,threedim_loss=self.training_step(model_orig,model_reco,orig_batch,reco_batch,reg_factor=reg_factor)
+            #import pdb;pdb.set_trace()
+            loss,flow_loss,latent_loss,threedim_loss=self.training_step(model_orig,model_reco,orig_batch,reco_batch,reg_factor=reg_factor)            
             train_loss+=loss
             train_flow_loss+=flow_loss
             train_latent_loss+=latent_loss
             train_3d_loss+=threedim_loss
-            if (step+1)%100==0:
-                print(f'At step: {step+1}, total loss = {(train_flow_loss/(step+1)):0.03f} flow + {(train_latent_loss/(step+1)):0.03f} latent + {(train_3d_loss/(step+1)):0.03f} 3D')
+            if not np.isfinite(loss):
+                print('NAN Loss detected. Pause for debugging')
+                import pdb;pdb.set_trace()
+            if (loss>10000.):
+                import pdb;pdb.set_trace()
+            
+            print(f'At step: {step+1}, total loss = {(train_flow_loss/(step+1)):0.03f} flow + {(train_latent_loss/(step+1)):0.03f} latent + {(train_3d_loss/(step+1)):0.03f} 3D')#,end='\r',flush=True)
+        print('\n')
+        import pdb;pdb.set_trace()
+            
+        print('### END OF EPOCH ###')
+        
         return train_loss/(step+1),train_flow_loss/(step+1),train_latent_loss/(step+1),train_3d_loss/(step+1)
     
     def reco_to_orig(self,model_orig,model_reco,X_batch):
         latent_reco=model_reco.invert(X_batch)
-        X_batch_orig=model_orig.flow.bijector.forward(latent_reco)
+        X_batch_orig=model_orig(latent_reco)
         return X_batch_orig
     
     def orig_to_reco(self,model_orig,model_reco,X_batch):
         latent_orig=model_orig.invert(X_batch)
-        X_batch_reco=model_reco.flow.bijector.forward(latent_orig)
+        X_batch_reco=model_reco(latent_orig)
         return X_batch_reco
     
     def valid_epoch(self,model_orig,model_reco,valid_ds,reg_factor=0.01):
@@ -178,7 +214,7 @@ class JointTrainer():
             loss_orig=model_orig.nll_loss(orig_batch,training=False) # model is propagated forward on reco batch
             latent_diff=tf.math.squared_difference(model_reco.invert(reco_batch),model_orig.invert(orig_batch))
             latent_loss=tf.reduce_mean(latent_diff)
-            threedim_loss=threeD_loss(tf.reshape(orig_batch,[-1,100,3]),tf.reshape(model_orig,model_reco,self.reco_to_orig(reco_batch),[-1,100,3]))
+            threedim_loss=self.get_loss_between_jets(model_orig,model_reco,orig_batch,reco_batch)
             threedim_loss=tf.abs(tf.reduce_mean(threedim_loss))
             flow_loss=reg_factor*(loss_reco+loss_orig)
             loss=flow_loss+2*latent_loss+2*threedim_loss # Factor of 2 is needed because the latent loss is same for both networks
@@ -186,13 +222,14 @@ class JointTrainer():
             valid_flow_loss+=flow_loss
             valid_latent_loss+=2*latent_loss
             valid_3d_loss+=2*threedim_loss
-            print(f'At step: {step+1}, total loss = {(valid_flow_loss/(step+1)):0.03f} flow + {(valid_latent_loss/(step+1)):0.03f} latent + {(valid_3d_loss/(step+1)):0.03f} 3D')
-        #if epoch>15:
+            print(f'At step: {step+1}, total loss = {(valid_flow_loss/(step+1)):0.03f} flow + {(valid_latent_loss/(step+1)):0.03f} latent + {(valid_3d_loss/(step+1)):0.03f} 3D',end='\r',flush=True)
         #import pdb;pdb.set_trace()
         
+        #if epoch>15:
+        print('\n### END OF VALIDATION STEP. STARTING NEXT EPOCH ###')
         return valid_loss/(step+1),valid_flow_loss/(step+1),valid_latent_loss/(step+1),valid_3d_loss/(step+1)
     
-    def train(self,model_orig,model_reco,train_ds,valid_ds,epochs,reg_factor=0.01):
+    def train(self,path,model_orig,model_reco,train_ds,valid_ds,epochs,reg_factor=0.01):
         '''
         train_ds: should contain batches of both orig and reco jets in that order
         valid_ds: should contain two datasets: orig and reco, in that order
@@ -203,12 +240,18 @@ class JointTrainer():
             print(f'Epoch: {epoch}')
             train_loss,train_flow_loss,train_latent_loss,train_3d_loss=self.training_epoch(model_orig,model_reco,train_ds,reg_factor=reg_factor)
             valid_loss,valid_flow_loss,valid_latent_loss,valid_3d_loss=self.valid_epoch(model_orig,model_reco,valid_ds,reg_factor=reg_factor)
-            losses_train.append(train_loss)
-            losses_valid.append(valid_loss)
+            losses_train.append(train_3d_loss)
+            losses_valid.append(valid_3d_loss)
             print(f'Average train loss: {train_loss:0.03f} and average validation loss: {valid_loss:0.03f}')
             print(f'Average train flow loss: {train_flow_loss:0.03f} and average validation flow loss: {valid_flow_loss:0.03f}')
             print(f'Average train latent loss: {train_latent_loss:0.03f} and average validation latent loss: {valid_latent_loss:0.03f}')
             print(f'Average train 3D loss: {train_3d_loss:0.03f} and average validation 3D loss: {valid_3d_loss:0.03f}')
+            print(f"Saving current model to {path}")
+            #model_orig.save_model(path,'orig_flow.tf')
+            #model_reco.save_model(path,'reco_flow.tf')
+            model_orig.save_checkpoint(os.path.join(path,'orig'),self.optimizer_orig,'best_so_far_orig')
+            model_reco.save_checkpoint(os.path.join(path,'reco'),self.optimizer_reco,'best_so_far_reco')
+            
             if self.train_stop.check_stop_training(losses_valid):
                 print('!!! stopping training !!!')
                 break
