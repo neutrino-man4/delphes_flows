@@ -4,6 +4,13 @@ from vande.util.data_generator import CaseDataGenerator
 import pandas as pd
 import h5py
 
+def convert_ptetaphi_to_pxpypz(jet_array):
+    jet_converted=np.zeros_like(jet_array)
+    jet_converted[:,:,0] = jet_array[:,:,0]*np.cos(jet_array[:,:,2]) #px = pt cos(phi)
+    jet_converted[:,:,1] = jet_array[:,:,0]*np.sin(jet_array[:,:,2]) #py = pt sin(phi)
+    jet_converted[:,:,2] = jet_array[:,:,0]*np.sinh(jet_array[:,:,1]) #pz = pt sinh(eta)
+    return jet_converted        
+
 def events_to_input_samples(constituents):
     '''Stacks up both jets in a constituents array of shape N x 2 x 100 x 3 and returns an array of shape 2N x 100 x 3'''
     const_j1 = constituents[:,0,:,:]
@@ -22,6 +29,12 @@ def events_to_orig_reco_samples(constituents_orig,constituents_reco):
     reco_const_j2 = constituents_reco[:,1,:,:]
     return np.vstack([orig_const_j1, orig_const_j2]),np.vstack([reco_const_j1, reco_const_j2])
 
+def samples_to_events(arr):
+    '''
+        accepts an array of shape 2N x 100 x 3 and returns an array of shape 2 x N x 100 x 3
+    '''
+    return np.reshape(arr,[2,arr.shape[0]//2,arr.shape[1],arr.shape[2]])
+    
 class CMSDataGenerator(CaseDataGenerator):
     ''' 
     We can inherit from the original Case Data Reader and modify only the part where pt,eta,phi is converted to px,py,pz
@@ -44,7 +57,8 @@ class CMSDataGenerator(CaseDataGenerator):
         for constituents_orig, constituents_reco in generator:
             
             orig_samples,reco_samples = events_to_orig_reco_samples(constituents_orig[:,:,:,:3],constituents_reco[:,:,:,:3])
-            #import pdb;pdb.set_trace()
+            orig_samples = convert_ptetaphi_to_pxpypz(orig_samples)
+            reco_samples = convert_ptetaphi_to_pxpypz(reco_samples)
             indices = list(range(len(reco_samples)))
             samples_read_n += len(reco_samples)
             while indices:
